@@ -1,6 +1,6 @@
 [![DOI](https://zenodo.org/badge/1079456425.svg)](https://doi.org/10.5281/zenodo.17619083)
 
 
-<h2 align="center"> Contrastive Evidence Re-ranking (CER) </h2>  
+<h2 align="center"> Contrastive Evidence Re-ranking (CERe) </h2>  
 
 
