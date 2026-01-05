@@ -1,6 +1,6 @@
 [![DOI](https://zenodo.org/badge/1079456425.svg)](https://doi.org/10.5281/zenodo.17619083)
 
 
-<h2 align="center"> Contrastive Evidence Rationale Attention (CERA) </h2>  
+<h2 align="center"> CERA </h2>  
 
 
