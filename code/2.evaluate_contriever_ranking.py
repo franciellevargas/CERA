@@ -8,8 +8,8 @@ from collections import Counter
 # =============================
 # CONFIG
 # =============================
-MODEL_NAME = "facebook/contriever"
-JSON_FILE = "contriever_train_triplets_LOCAL.jsonl"
+MODEL_NAME = "final-contriever-finetuned-triplet+kl_maskpos51_epoch30"
+JSON_FILE = "contriever_test_triplets_SUBJ_LOCAL_dedup.jsonl"
 OUTPUT_JSON = "contriever_base_full_rankings.json"
 
 MAX_LEN = 256
@@ -25,6 +25,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 model.to(DEVICE)
 model.eval()
+
 
 # =============================
 # EMBEDDING
@@ -45,12 +46,14 @@ def embed(texts):
     emb = F.normalize(emb, p=2, dim=1)
     return emb
 
+
 # =============================
 # LOAD DATA
 # =============================
 def load_jsonl(path):
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f]
+
 
 # =============================
 # MAIN EVALUATION + SAVE RANKING
@@ -64,7 +67,7 @@ def evaluate_and_save(data):
 
     all_rankings = []
 
-    for ex in tqdm(data, desc="🔎 Avaliando ranking (Contriever base)"):
+    for ex in tqdm(data, desc=f"Evaluating ranking {MODEL_NAME}"):
 
         pmcid = ex.get("PMCID", "UNKNOWN")
         query = ex["query"]
@@ -100,7 +103,6 @@ def evaluate_and_save(data):
                     "text": text
                 })
 
-        # métricas
         rank_distribution[positive_rank] += 1
         mrr_total += 1.0 / positive_rank
 
@@ -126,35 +128,33 @@ def evaluate_and_save(data):
 
     return recall_at_k, hit_at_1, mrr, rank_distribution, all_rankings
 
+
 # =============================
 # RUN
 # =============================
 if __name__ == "__main__":
 
     data = load_jsonl(JSON_FILE)
-    print(f"📦 Total de exemplos: {len(data)}")
+    print(f"Total of examples: {len(data)}")
 
     recall_at_k, hit_at_1, mrr, rank_dist, all_rankings = evaluate_and_save(data)
 
-    # salvar JSON com rankings
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(all_rankings, f, indent=2, ensure_ascii=False)
 
     print("\n==============================")
-    print("📊 RESULTADOS FINAIS – CONTRIEVER BASE")
+    print(f"RESULTS – {MODEL_NAME}")
     print("==============================")
 
     print("\nRecall@K:")
     for k, v in recall_at_k.items():
-        print(f"Recall@{k}: {v:.4f}")
+        print(f"Recall@{k}: {v:.5f}")
 
-    print(f"\nHit@1: {hit_at_1:.4f}")
-    print(f"MRR:   {mrr:.4f}")
+    print(f"\nHit@1: {hit_at_1:.5f}")
+    print(f"MRR:   {mrr:.5f}")
 
-    print("\nDistribuição dos ranks do positivo:")
+    print("\nPositives rank distribution:")
     for rank in sorted(rank_dist):
         print(f"Rank {rank}: {rank_dist[rank]}")
 
-    print(f"\n📁 Rankings completos (Top-50) salvos em: {OUTPUT_JSON}")
-
-
+    print(f"\nComplete rankings (TOP-50) saved in: {OUTPUT_JSON}")
