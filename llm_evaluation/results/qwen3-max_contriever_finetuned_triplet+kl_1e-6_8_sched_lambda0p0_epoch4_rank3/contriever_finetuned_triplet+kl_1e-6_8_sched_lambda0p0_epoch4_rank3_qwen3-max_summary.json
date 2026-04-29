@@ -1,0 +1,19 @@
+{
+  "input_file": "./test_results/contriever_finetuned_triplet+kl_1e-6_8_sched_lambda0p0_epoch4_pmcid_local_top_50_rankings.json",
+  "model": "qwen3-max",
+  "eval_rank": 3,
+  "temperature": 0.0,
+  "top_p": 1,
+  "total_entries": 1916,
+  "judged_count": 1916,
+  "skipped_no_gold_in_top_k": 0,
+  "skipped_no_span_at_rank": 0,
+  "api_errors": 0,
+  "mean_llm_score": 1.4703,
+  "score_distribution": {
+    "0": 404,
+    "1": 527,
+    "2": 665,
+    "3": 320
+  }
+}
