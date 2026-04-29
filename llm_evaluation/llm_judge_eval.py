@@ -14,7 +14,12 @@ information from the gold span(s)
 gold span(s) needed to answer the query
 
 Usage:
-    python3 llm_judge_eval.py --input <PATH> --gold-spans <PATH> --model <MODEL> --api-key <KEY> --rank 1 --output-dir <PATH>
+    python3 llm_judge_eval.py --input <PATH> \
+        --gold-spans <PATH> \
+        --model <MODEL> \
+        --api-key <KEY> \
+        --rank <INT> \
+        --output-dir <PATH>
 """
 
 import argparse
