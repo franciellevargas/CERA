@@ -1,13 +1,17 @@
 """
 LLM-as-a-Judge evaluation for retrieval system quality.
 
-Evaluates quality by asking an LLM to judge how useful a retrieved span is for answering the query, compared to the annotated gold span, as well as if the retrieved span is factually consistent.
+Evaluates quality by asking an LLM to judge how useful a retrieved span is for
+answering the query, compared to the annotated gold span, as well as if the 
+retrieved span is factually consistent.
 
 Grading scale:
 0 = Factually incorrect OR contradicts the gold span(s), even if relevant
 1 = Factually consistent but mostly irrelevant or contains no useful information for the query
-2 = Factually consistent and partially useful, but incomplete or missing key information from the gold span(s)
-3 = Factually consistent and highly useful; captures the key facts from the gold span(s) needed to answer the query
+2 = Factually consistent and partially useful, but incomplete or missing key 
+information from the gold span(s)
+3 = Factually consistent and highly useful; captures the key facts from the 
+gold span(s) needed to answer the query
 
 Usage:
     python3 llm_judge_eval.py --input <PATH> --gold-spans <PATH> --model <MODEL> --api-key <KEY> --rank 1 --output-dir <PATH>
