@@ -21,7 +21,6 @@ Usage:
         --rank <INT> \
         --output-dir <PATH>
 """
-
 import argparse
 import json
 import os
