@@ -39,7 +39,7 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
 
-# DATASET
+# Dataset
 class TripletDataset1N(Dataset):
     """Dataset of query/positive pairs loaded from a JSONL triplet file.
 

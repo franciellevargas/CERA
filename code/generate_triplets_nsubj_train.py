@@ -4,6 +4,8 @@ import json
 import random
 from textblob import TextBlob
 
+from generate_triplets_train import build_query, chunk_text_with_offsets, overlaps
+
 random.seed(42)
 
 TXT_FOLDER = "txt_train"
@@ -11,81 +13,6 @@ CHUNK_SIZE = 50
 CHUNK_OVERLAP = 10
 N_NEGATIVES = 5
 OUTPUT_FILE = "contriever_train_triplets_SUBJ_LOCAL.jsonl"
-
-
-def build_query(row: pd.Series) -> str:
-    """Build a natural-language comparison query from an annotation row.
-
-    Args:
-        row (pd.Series): Row holding the "Intervention", "Comparator" and
-            "Outcome" fields.
-
-    Returns:
-        str: A query comparing the intervention versus the comparator on the
-            outcome.
-    """
-    return f"Compare the effect of {row['Intervention']} versus {row['Comparator']} on {row['Outcome']}."
-
-
-def chunk_text_with_offsets(text: str, chunk_size: int = 50, chunk_overlap: int = 10) -> list:
-    """Split text into overlapping word chunks while tracking character offsets.
-
-    Args:
-        text (str): The full document text to chunk.
-        chunk_size (int): Number of words per chunk.
-        chunk_overlap (int): Number of words shared between consecutive chunks.
-
-    Returns:
-        list: A list of dicts, each with the keys "text" (str), "char_start"
-            (int) and "char_end" (int) describing one chunk and its span in
-            the original text.
-    """
-    words = text.split()
-    chunks = []
-
-    if not words:
-        return chunks
-
-    char_positions = []
-    pos = 0
-    for w in words:
-        start = text.find(w, pos)
-        end = start + len(w)
-        char_positions.append((start, end))
-        pos = end
-
-    i = 0
-    while i < len(words):
-        sw = i
-        ew = min(i + chunk_size, len(words))
-
-        cs = char_positions[sw][0]
-        ce = char_positions[ew - 1][1]
-
-        chunks.append({
-            "text": " ".join(words[sw:ew]),
-            "char_start": cs,
-            "char_end": ce
-        })
-
-        i += (chunk_size - chunk_overlap)
-
-    return chunks
-
-
-def overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
-    """Check whether two character spans overlap.
-
-    Args:
-        a_start (int): Start offset of the first span.
-        a_end (int): End offset of the first span.
-        b_start (int): Start offset of the second span.
-        b_end (int): End offset of the second span.
-
-    Returns:
-        bool: True if the two spans overlap, False otherwise.
-    """
-    return not (b_end < a_start or b_start > a_end)
 
 
 def chunk_subjectivity(text: str) -> float:
