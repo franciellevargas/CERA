@@ -1,6 +1,5 @@
 import json
 import numpy as np
-import os
 import random
 import subprocess
 import spacy
@@ -15,6 +14,12 @@ from tqdm import tqdm
 
 
 def get_free_gpu():
+    """Find the GPU with the most free memory by querying nvidia-smi.
+
+    Returns:
+        int | None: Index of the GPU with the largest amount of free memory,
+            or None if nvidia-smi could not be accessed.
+    """
     try:
         result = subprocess.check_output(
             ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,nounits,noheader'],
@@ -51,13 +56,11 @@ with open(REPORT_FILE, "w", encoding="utf-8") as f:
     )
     f.write("=" * 60 + "\n")
 
-
 CHECKPOINT_EPOCHS = {1,2,3,4,5,6,7,8,9}
 
 gpu_id = get_free_gpu()
 DEVICE = torch.device(f'cuda:{gpu_id}') if gpu_id is not None and torch.cuda.is_available() else torch.device('cpu')
 print(f"Using device: {DEVICE}")
-
 
 SEED = 51
 
@@ -92,8 +95,27 @@ POS_WEIGHTS = {
     "X": 0.0
 }
 
+
 class TripletDataset1N(Dataset):
-    def __init__(self, json_file, tokenizer, max_length=MAX_LENGTH):
+    """Dataset of (query, positive, negatives) triplets with weighted rationales.
+
+    Each line of the source JSONL file is expected to contain a query, a single
+    positive passage, a list of negatives and an evidence span (character
+    offsets) inside the positive. Entries missing any of these fields (or with
+    an invalid evidence span) are skipped. At load time each positive is parsed
+    with spaCy so that, at access time, a part-of-speech weighted rationale mask
+    can be built over the evidence tokens of the positive passage.
+    """
+
+    def __init__(self, json_file: str, tokenizer, max_length: int = MAX_LENGTH):
+        """Load and filter the triplets, caching spaCy token spans per positive.
+
+        Args:
+            json_file (str): Path to the JSONL file holding the triplets.
+            tokenizer: Hugging Face tokenizer used to encode the texts.
+            max_length (int): Maximum sequence length used for truncation and
+                padding when tokenizing.
+        """
         self.data = []
 
         with open(json_file, "r", encoding="utf-8") as f:
@@ -117,9 +139,7 @@ class TripletDataset1N(Dataset):
                     int(ev_e) > int(ev_s) >= 0
                 ):
 
-                    # ----------------------------------
-                    # spaCy preprocessing ONCE
-                    # ----------------------------------
+                    # spaCy preprocessing
                     doc = nlp(pos)
 
                     spacy_tokens = []
@@ -143,10 +163,33 @@ class TripletDataset1N(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of triplets in the dataset.
+
+        Returns:
+            int: The number of valid triplets loaded.
+        """
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
+        """Tokenize the triplet and build the weighted rationale mask.
+
+        For the positive passage, tokens overlapping the evidence span are
+        assigned a weight from POS_WEIGHTS based on the (majority-voted)
+        part-of-speech of the overlapping spaCy tokens. The CLS position is
+        zeroed out, and if the evidence vanished after truncation the mask falls
+        back to the (CLS-zeroed) attention mask.
+
+        Args:
+            idx (int): Index of the triplet to retrieve.
+
+        Returns:
+            dict: A mapping with the tokenized tensors for the query, positive,
+                and negatives, namely query, query_attn, positive,
+                positive_attn, rat_mask (weighted rationale mask over the
+                positive with the CLS position zeroed out), negatives and
+                negatives_attn.
+        """
         item = self.data[idx]
 
         query_enc = self.tokenizer(
@@ -186,9 +229,7 @@ class TripletDataset1N(Dataset):
 
         spacy_tokens = item["spacy_tokens"]
 
-        # ----------------------------------
         # Build rationale mask
-        # ----------------------------------
         for i in range(attn.size(0)):
 
             if attn[i].item() == 0:
@@ -197,17 +238,15 @@ class TripletDataset1N(Dataset):
             ts = int(offsets[i, 0].item())
             te = int(offsets[i, 1].item())
 
-            # skip special tokens
+            # Skip special tokens
             if ts == 0 and te == 0:
                 continue
 
-            # token must intersect evidence
+            # Token must intersect evidence
             if te <= ev_s or ts >= ev_e:
                 continue
 
-            # ----------------------------------
             # Find overlapping spaCy tokens
-            # ----------------------------------
             overlapping_pos = []
 
             for sp_tok in spacy_tokens:
@@ -220,12 +259,12 @@ class TripletDataset1N(Dataset):
                 if overlap:
                     overlapping_pos.append(sp_tok["pos"])
 
-            # fallback
+            # Fallback
             if len(overlapping_pos) == 0:
                 pos_tag = "X"
 
             else:
-                # majority voting
+                # Majority voting
                 pos_tag = max(
                     set(overlapping_pos),
                     key=overlapping_pos.count
@@ -235,10 +274,10 @@ class TripletDataset1N(Dataset):
 
             rat_mask[i] = weight
 
-        # remove CLS
+        # Remove CLS
         rat_mask[0] = 0.0
 
-        # fallback if evidence vanished after truncation
+        # Fallback if evidence vanished after truncation
         if rat_mask.sum().item() == 0:
             rat_mask = attn.float()
             rat_mask[0] = 0.0
@@ -265,11 +304,36 @@ class TripletDataset1N(Dataset):
 
 
 class ContrieverFineTuneWithAttn(nn.Module):
-    def __init__(self, model_name):
+    """Contriever encoder wrapper that exposes CLS embeddings and attention.
+
+    Wraps a Hugging Face AutoModel (loaded with eager attention so that
+    attention weights are available) and provides helpers to produce
+    L2-normalized CLS embeddings as well as the CLS-to-token attention used by
+    the rationale KL loss.
+    """
+
+    def __init__(self, model_name: str):
+        """Build the wrapper around a pretrained encoder.
+
+        Args:
+            model_name (str): Hugging Face model identifier or path to load the
+                encoder from.
+        """
         super().__init__()
         self.encoder = AutoModel.from_pretrained(model_name, attn_implementation="eager")
 
-    def encode_cls(self, input_ids, attention_mask):
+    def encode_cls(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Encode a batch and return L2-normalized CLS embeddings.
+
+        Args:
+            input_ids (torch.Tensor): Token ids of shape (batch, seq_len).
+            attention_mask (torch.Tensor): Attention mask of shape
+                (batch, seq_len).
+
+        Returns:
+            torch.Tensor: L2-normalized CLS embeddings of shape
+                (batch, hidden_size).
+        """
         out = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -280,7 +344,23 @@ class ContrieverFineTuneWithAttn(nn.Module):
         emb = F.normalize(emb, p=2, dim=1)
         return emb
 
-    def encode_positive_with_attention(self, input_ids, attention_mask):
+    def encode_positive_with_attention(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> tuple:
+        """Encode a batch and return CLS embeddings plus CLS-to-token attention.
+
+        The CLS-to-token attention from the last layer is averaged across heads
+        and is later compared against the rationale mask in the KL loss.
+
+        Args:
+            input_ids (torch.Tensor): Token ids of shape (batch, seq_len).
+            attention_mask (torch.Tensor): Attention mask of shape
+                (batch, seq_len).
+
+        Returns:
+            tuple: A pair (emb, cls_to_tok) where emb is the L2-normalized
+                CLS embedding of shape (batch, hidden_size) and cls_to_tok
+                is the last-layer, head-averaged CLS-to-token attention of shape
+                (batch, seq_len).
+        """
         out = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -299,12 +379,42 @@ class ContrieverFineTuneWithAttn(nn.Module):
 
 
 class CosineTripletLoss1N(nn.Module):
-    def __init__(self, margin=0.2, reduction='mean'):
+    """Cosine-similarity triplet margin loss with one positive and N negatives.
+
+    For each anchor the loss encourages the cosine similarity to the positive to
+    exceed the similarity to every negative by at least margin. The per-anchor
+    loss is the mean over its negatives.
+    """
+
+    def __init__(self, margin: float = 0.2, reduction: str = 'mean'):
+        """Configure the triplet loss.
+
+        Args:
+            margin (float): Margin enforced between the positive and negative
+                similarities.
+            reduction (str): How to reduce the per-anchor losses; one of
+                mean, sum or any other value to return the unreduced per-anchor
+                losses.
+        """
         super().__init__()
         self.margin = margin
         self.reduction = reduction
 
-    def forward(self, anchor, positive, negatives):
+    def forward(self, anchor: torch.Tensor, positive: torch.Tensor, negatives: torch.Tensor) -> torch.Tensor:
+        """Compute the triplet loss for a batch.
+
+        Args:
+            anchor (torch.Tensor): Anchor embeddings of shape
+                (batch, hidden_size).
+            positive (torch.Tensor): Positive embeddings of shape
+                (batch, hidden_size).
+            negatives (torch.Tensor): Negative embeddings of shape
+                (batch, num_negatives, hidden_size).
+
+        Returns:
+            torch.Tensor: The reduced loss (a scalar for mean/sum) or the
+                per-anchor losses of shape (batch,) otherwise.
+        """
         sim_pos = F.cosine_similarity(anchor, positive, dim=-1).unsqueeze(1)
         sim_neg = F.cosine_similarity(anchor.unsqueeze(1), negatives, dim=-1)
         losses = F.relu(sim_neg - sim_pos + self.margin)
@@ -318,7 +428,27 @@ class CosineTripletLoss1N(nn.Module):
             return losses
 
 
-def rationale_kl_loss(cls_to_tok, rat_mask, pos_attn, eps=1e-8):
+def rationale_kl_loss(cls_to_tok: torch.Tensor, rat_mask: torch.Tensor, pos_attn: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """KL divergence between the rationale mask and the CLS-to-token attention.
+
+    Both the model's CLS-to-token attention and the rationale mask are restricted
+    to valid (non-padding) rationale tokens and normalized into distributions
+    over the sequence. The KL divergence KL(rationale || attention) is then
+    averaged over the batch, encouraging the model to attend to rationale tokens.
+
+    Args:
+        cls_to_tok (torch.Tensor): CLS-to-token attention of shape
+            (batch, seq_len).
+        rat_mask (torch.Tensor): Weighted rationale mask of shape (batch, seq_len)
+            marking the rationale tokens of the positive passage.
+        pos_attn (torch.Tensor): Attention mask of the positive passage of shape
+            (batch, seq_len), used to exclude padding tokens.
+        eps (float): Small constant for numerical stability when normalizing and
+            taking logarithms.
+
+    Returns:
+        torch.Tensor: Scalar mean KL divergence over the batch.
+    """
     valid = (pos_attn.float() * (rat_mask > 0).float())
 
     a = cls_to_tok * valid

@@ -11,11 +11,13 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
 
 
-# =========================================================
-# GPU
-# =========================================================
-
 def get_free_gpu():
+    """Find the GPU with the most free memory by querying nvidia-smi.
+
+    Returns:
+        int | None: Index of the GPU with the largest amount of free memory,
+            or None if nvidia-smi could not be accessed.
+    """
     try:
         result = subprocess.check_output(
             [
@@ -43,11 +45,6 @@ DEVICE = torch.device(
 
 print(f"Using device: {DEVICE}")
 
-
-# =========================================================
-# CONFIG
-# =========================================================
-
 MODEL_PATH = "triplet+kl_maskpos51_1e-6_8_sched_lambda0p1_epoch4"
 JSON_FILE = "contriever_test_triplets_SUBJ_LOCAL_dedup.jsonl"
 
@@ -68,13 +65,23 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
 
-# =========================================================
 # DATASET
-# =========================================================
-
 class TripletDataset1N(Dataset):
+    """Dataset of query/positive pairs loaded from a JSONL triplet file.
 
-    def __init__(self, json_file, tokenizer, max_length=128):
+    Each line of the source file is expected to contain query, positives and 
+    negatives fields. Only entries that have a non-empty query, positive and at 
+    least one negative are kept.
+    """
+
+    def __init__(self, json_file: str, tokenizer, max_length: int = 128):
+        """Load and filter the triplet records from disk.
+
+        Args:
+            json_file (str): Path to the JSONL file containing the triplets.
+            tokenizer: Hugging Face tokenizer used to encode the text fields.
+            max_length (int): Maximum token length for padding/truncation.
+        """
 
         self.data = []
 
@@ -89,10 +96,25 @@ class TripletDataset1N(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of kept triplet records.
+
+        Returns:
+            int: Number of usable examples in the dataset.
+        """
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
+        """Tokenize and return the query/positive pair at the given index.
+
+        Args:
+            idx (int): Index of the record to retrieve.
+
+        Returns:
+            dict: Mapping with the tokenized query and positive input ids and
+                their corresponding attention masks, each as a 1D tensor with
+                the batch dimension squeezed out.
+        """
 
         item = self.data[idx]
 
@@ -120,14 +142,31 @@ class TripletDataset1N(Dataset):
         }
 
 
-# =========================================================
-# METRICS
-# =========================================================
-
+# Metrics
 class RetrievalFaithfulnessMetrics:
+    """Compute comprehensiveness and sufficiency faithfulness metrics.
 
-    def __init__(self, model, tokenizer, device,
-                 top_k=20, ratio=0.2, min_k=5, use_pad_masking=True):
+    The metrics quantify how much the tokens selected as a rationale (via the
+    model's attention weights) drive the cosine similarity between a query and
+    a document embedding, by comparing the original similarity against
+    similarities obtained from masked inputs.
+    """
+
+    def __init__(self, model, tokenizer, device: torch.device,
+                 top_k: int = 20, ratio: float = 0.2, min_k: int = 5,
+                 use_pad_masking: bool = True):
+        """Store the model, tokenizer and rationale-selection settings.
+
+        Args:
+            model: Encoder model returning last_hidden_state embeddings.
+            tokenizer: Hugging Face tokenizer matching model.
+            device (torch.device): Device on which encoding is performed.
+            top_k (int): Number of rationale tokens when method='top_k'.
+            ratio (float): Fraction of valid tokens kept when method='ratio'.
+            min_k (int): Minimum number of rationale tokens for the ratio method.
+            use_pad_masking (bool): If True, mask tokens with the pad token and
+                zero their attention; otherwise replace them with the mask token.
+        """
 
         self.model = model
         self.tokenizer = tokenizer
@@ -138,7 +177,17 @@ class RetrievalFaithfulnessMetrics:
         self.min_k = min_k
         self.use_pad_masking = use_pad_masking
 
-    def encode_cls(self, input_ids, attention_mask):
+    def encode_cls(self, input_ids: torch.Tensor,
+                   attention_mask: torch.Tensor) -> torch.Tensor:
+        """Encode a single sequence into an L2-normalized CLS embedding.
+
+        Args:
+            input_ids (torch.Tensor): 1D tensor of token ids.
+            attention_mask (torch.Tensor): 1D attention mask matching input_ids.
+
+        Returns:
+            torch.Tensor: 1D L2-normalized embedding taken from the CLS token.
+        """
 
         with torch.no_grad():
             outputs = self.model(
@@ -152,17 +201,40 @@ class RetrievalFaithfulnessMetrics:
 
         return emb.squeeze(0)
 
-    def cosine_sim(self, emb1, emb2):
+    def cosine_sim(self, emb1: torch.Tensor, emb2: torch.Tensor) -> float:
+        """Compute the cosine similarity between two embeddings.
+
+        Args:
+            emb1 (torch.Tensor): First 1D embedding.
+            emb2 (torch.Tensor): Second 1D embedding.
+
+        Returns:
+            float: Cosine similarity between the two embeddings.
+        """
         return F.cosine_similarity(
             emb1.unsqueeze(0),
             emb2.unsqueeze(0)
         ).item()
 
-    # =====================================================
-    # FIXED MASKING
-    # =====================================================
+    # Fixed Masking
+    def create_masked_input(self, input_ids: torch.Tensor,
+                            attention_mask: torch.Tensor,
+                            indices_to_mask) -> tuple:
+        """Mask the given token positions, skipping special tokens.
 
-    def create_masked_input(self, input_ids, attention_mask, indices_to_mask):
+        Positions holding [CLS], [SEP] or [PAD] tokens are left
+        untouched. Depending on use_pad_masking, masked positions are either
+        replaced by the pad token (with attention zeroed) or by the mask token.
+
+        Args:
+            input_ids (torch.Tensor): 1D tensor of token ids to copy and mask.
+            attention_mask (torch.Tensor): 1D attention mask matching input_ids.
+            indices_to_mask: Iterable of integer positions to mask; out-of-range
+                indices are ignored.
+
+        Returns:
+            tuple: The masked (input_ids, attention_mask) tensors.
+        """
 
         masked_ids = input_ids.clone()
         masked_attn = attention_mask.clone()
@@ -187,9 +259,24 @@ class RetrievalFaithfulnessMetrics:
 
         return masked_ids, masked_attn
 
-    # =====================================================
+    def select_rationale_indices(self, attention_weights: np.ndarray,
+                                 attention_mask: np.ndarray,
+                                 method: str = 'ratio') -> np.ndarray:
+        """Select the highest-attention token positions as the rationale.
 
-    def select_rationale_indices(self, attention_weights, attention_mask, method='ratio'):
+        CLS, SEP and padding positions are excluded before ranking. The number
+        of selected tokens depends on method: ratio keeps
+        max(min_k, valid_count * ratio) tokens, otherwise top_k tokens.
+
+        Args:
+            attention_weights (np.ndarray): 1D array of per-token attention scores.
+            attention_mask (np.ndarray): 1D mask where 0 marks padding positions.
+            method (str): Selection strategy, either ratio or top_k.
+
+        Returns:
+            np.ndarray: Indices of the selected rationale tokens, ordered from
+                highest to lowest attention.
+        """
 
         valid_attention = attention_weights.copy()
         valid_attention[attention_mask == 0] = -np.inf
@@ -210,12 +297,25 @@ class RetrievalFaithfulnessMetrics:
 
         return np.array([i for i in indices if valid_attention[i] > -np.inf])
 
-    # =====================================================
-    # COMPREHENSIVENESS
-    # =====================================================
+    # Comprehensiveness
+    def compute_comprehensiveness(self, query_ids: torch.Tensor,
+                                  query_attn: torch.Tensor,
+                                  doc_ids: torch.Tensor, doc_attn: torch.Tensor,
+                                  rationale_indices: np.ndarray) -> float:
+        """Measure the similarity drop when the rationale tokens are removed.
 
-    def compute_comprehensiveness(self, query_ids, query_attn,
-                                  doc_ids, doc_attn, rationale_indices):
+        Args:
+            query_ids (torch.Tensor): 1D token ids of the query.
+            query_attn (torch.Tensor): 1D attention mask of the query.
+            doc_ids (torch.Tensor): 1D token ids of the document.
+            doc_attn (torch.Tensor): 1D attention mask of the document.
+            rationale_indices (np.ndarray): Document positions forming the rationale.
+
+        Returns:
+            float: Original query-document similarity minus the similarity after
+                masking the rationale tokens. Higher values indicate a more
+                comprehensive rationale.
+        """
 
         query_emb = self.encode_cls(query_ids, query_attn)
         doc_emb = self.encode_cls(doc_ids, doc_attn)
@@ -232,12 +332,27 @@ class RetrievalFaithfulnessMetrics:
 
         return original_sim - masked_sim
 
-    # =====================================================
-    # SUFFICIENCY (FIXED)
-    # =====================================================
+    # Sufficiency
+    def compute_sufficiency(self, query_ids: torch.Tensor,
+                            query_attn: torch.Tensor,
+                            doc_ids: torch.Tensor, doc_attn: torch.Tensor,
+                            rationale_indices: np.ndarray) -> float:
+        """Measure the similarity retained when only the rationale is kept.
 
-    def compute_sufficiency(self, query_ids, query_attn,
-                            doc_ids, doc_attn, rationale_indices):
+        Every non-rationale position in the document is masked, and the cosine
+        similarity between the query and this rationale-only document is returned.
+
+        Args:
+            query_ids (torch.Tensor): 1D token ids of the query.
+            query_attn (torch.Tensor): 1D attention mask of the query.
+            doc_ids (torch.Tensor): 1D token ids of the document.
+            doc_attn (torch.Tensor): 1D attention mask of the document.
+            rationale_indices (np.ndarray): Document positions forming the rationale.
+
+        Returns:
+            float: Cosine similarity between the query and the rationale-only
+                document. Higher values indicate a more sufficient rationale.
+        """
 
         query_emb = self.encode_cls(query_ids, query_attn)
 
@@ -256,9 +371,23 @@ class RetrievalFaithfulnessMetrics:
 
         return self.cosine_sim(query_emb, rationale_emb)
 
-    # =====================================================
+    def compute_all(self, dataloader: DataLoader, attentions: list) -> dict:
+        """Compute mean comprehensiveness and sufficiency over a dataset.
 
-    def compute_all(self, dataloader, attentions):
+        Iterates over every query/document pair in dataloader, selects its
+        rationale from the matching precomputed attention vector, and averages
+        the two faithfulness metrics. Examples whose rationale is empty are
+        skipped.
+
+        Args:
+            dataloader (DataLoader): Loader yielding tokenized query/positive batches.
+            attentions (list): Per-example attention vectors aligned with the
+                order in which dataloader yields its examples.
+
+        Returns:
+            dict: Mapping with the mean comprehensiveness and sufficiency
+                scores as floats.
+        """
 
         comp_scores = []
         suff_scores = []
@@ -313,10 +442,6 @@ class RetrievalFaithfulnessMetrics:
         }
 
 
-# =========================================================
-# LOAD MODEL
-# =========================================================
-
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModel.from_pretrained(
     MODEL_PATH,
@@ -324,18 +449,8 @@ model = AutoModel.from_pretrained(
 ).to(DEVICE)
 model.eval()
 
-
-# =========================================================
-# DATA
-# =========================================================
-
 dataset = TripletDataset1N(JSON_FILE, tokenizer, MAX_LENGTH)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-
-# =========================================================
-# ATTENTIONS
-# =========================================================
 
 all_attentions = []
 
@@ -351,11 +466,6 @@ with torch.no_grad():
         attn = outputs.attentions[-1][:, :, 0, :].mean(dim=1)
 
         all_attentions.extend(attn.cpu().numpy())
-
-
-# =========================================================
-# RUN
-# =========================================================
 
 metrics = RetrievalFaithfulnessMetrics(
     model,

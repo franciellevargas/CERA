@@ -4,12 +4,10 @@ import torch
 
 from transformers import AutoTokenizer
 
-
 MODEL_NAME = "facebook/contriever"
 MAX_LENGTH = 128
 
 JSON_FILE = "contriever_train_triplets_ev_offset_dedup.jsonl"
-
 
 POS_WEIGHTS = {
     "NOUN": 1.5,
@@ -57,7 +55,6 @@ POS_WEIGHTS = {
 nlp = spacy.load("en_core_web_sm")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-
 with open(JSON_FILE, "r", encoding="utf-8") as f:
 
     for example_idx, line in enumerate(f):
@@ -82,9 +79,7 @@ with open(JSON_FILE, "r", encoding="utf-8") as f:
         print("\nEVIDENCE:\n")
         print(positive[ev_s:ev_e])
 
-        # ---------------------------------------------------
         # spaCy tokenization
-        # ---------------------------------------------------
         doc = nlp(positive)
 
         spacy_tokens = []
@@ -97,9 +92,7 @@ with open(JSON_FILE, "r", encoding="utf-8") as f:
                 "pos": token.pos_
             })
 
-        # ---------------------------------------------------
         # Transformer tokenization
-        # ---------------------------------------------------
         enc = tokenizer(
             positive,
             truncation=True,
@@ -126,7 +119,7 @@ with open(JSON_FILE, "r", encoding="utf-8") as f:
             ts = int(offsets[i, 0].item())
             te = int(offsets[i, 1].item())
 
-            # special token
+            # Special token
             if ts == 0 and te == 0:
 
                 print(
@@ -137,7 +130,7 @@ with open(JSON_FILE, "r", encoding="utf-8") as f:
 
                 continue
 
-            # intersects evidence?
+            # Intersects evidence?
             intersects = not (te <= ev_s or ts >= ev_e)
 
             overlapping_pos = []

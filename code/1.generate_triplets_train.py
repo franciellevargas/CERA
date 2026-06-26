@@ -5,22 +5,41 @@ import random
 
 random.seed(42)
 
-# =============================
-# CONFIG
-# =============================
 TXT_FOLDER = "txt_train"
 CHUNK_SIZE = 50
 CHUNK_OVERLAP = 10
 N_NEGATIVES = 5
 OUTPUT_FILE = "contriever_train_triplets_LOCAL.jsonl"
 
-# =============================
-# FUNÇÕES
-# =============================
-def build_query(row):
+
+def build_query(row: pd.Series) -> str:
+    """Build a natural-language comparison query from an annotation row.
+
+    Args:
+        row (pd.Series): A row containing the Intervention, Comparator
+            and Outcome fields.
+
+    Returns:
+        str: A query of the form "Compare the effect of <Intervention> versus
+            <Comparator> on <Outcome>.".
+    """
     return f"Compare the effect of {row['Intervention']} versus {row['Comparator']} on {row['Outcome']}."
 
-def chunk_text_with_offsets(text, chunk_size=50, chunk_overlap=10):
+
+def chunk_text_with_offsets(text: str, chunk_size: int = 50, chunk_overlap: int = 10) -> list[dict]:
+    """Split text into overlapping word chunks while tracking character offsets.
+
+    Args:
+        text (str): The document text to chunk.
+        chunk_size (int): Number of words per chunk. Defaults to 50.
+        chunk_overlap (int): Number of words shared between consecutive chunks.
+            Defaults to 10.
+
+    Returns:
+        list[dict]: A list of chunks, each a dict with keys text (str),
+            char_start (int) and char_end (int) marking the chunk's
+            character span in the original text. Empty if text has no words.
+    """
     words = text.split()
     chunks = []
 
@@ -53,12 +72,22 @@ def chunk_text_with_offsets(text, chunk_size=50, chunk_overlap=10):
 
     return chunks
 
-def overlaps(a_start, a_end, b_start, b_end):
+
+def overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    """Check whether two character spans overlap.
+
+    Args:
+        a_start (int): Start offset of the first span.
+        a_end (int): End offset of the first span.
+        b_start (int): Start offset of the second span.
+        b_end (int): End offset of the second span.
+
+    Returns:
+        bool: True if the spans [a_start, a_end] and [b_start, b_end] overlap,
+            False otherwise.
+    """
     return not (b_end < a_start or b_start > a_end)
 
-# =============================
-# LOAD CSVs
-# =============================
 prompts = pd.read_csv("prompts_merged.csv")
 annotations = pd.read_csv("annotations_merged.csv")
 
@@ -71,26 +100,18 @@ merged = pd.merge(
     how="inner"
 )
 
-# =============================
-# FILTRAR EVIDÊNCIAS VÁLIDAS
-# =============================
+# Filter valid evidence
 merged = merged[
     (merged["Evidence Start"] >= 0) &
     (merged["Evidence End"] > merged["Evidence Start"])
 ]
 
-print(f"🎯 Evidências válidas totais: {len(merged)}")
+print(f"🎯 Total valid evidences: {len(merged)}")
 
-# =============================
-# CACHE DE DOCUMENTOS
-# =============================
 doc_cache = {}
 examples = []
 
-# =============================
-# LOOP PRINCIPAL
-# =============================
-print("\n🔧 Gerando triplets (local retrieval por documento)...")
+print("\n🔧 Generating triplets (local retrieval per document)...")
 
 for idx, row in merged.iterrows():
 
@@ -101,7 +122,7 @@ for idx, row in merged.iterrows():
     if not os.path.exists(txt_path):
         continue
 
-    # carregar documento uma única vez
+    # Load the document only once
     if pmcid not in doc_cache:
         with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
             doc_text = f.read()
@@ -127,7 +148,6 @@ for idx, row in merged.iterrows():
     ev_start = int(row["Evidence Start"])
     ev_end = int(row["Evidence End"])
 
-    # positivos e negativos
     positives = [
         c for c in chunks
         if overlaps(ev_start, ev_end, c["char_start"], c["char_end"])
@@ -144,7 +164,7 @@ for idx, row in merged.iterrows():
     if not negatives:
         continue
 
-    # montar triplet
+    # Triplet
     example = {
         "PMCID": pmcid,
         "query": build_query(row).lower(),
@@ -160,15 +180,10 @@ for idx, row in merged.iterrows():
 
     examples.append(example)
 
-# =============================
-# SALVAR
-# =============================
+
 with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
     for ex in examples:
         f.write(json.dumps(ex) + "\n")
 
-print(f"\n✅ Triplets gerados: {len(examples)}")
-print(f"📁 Arquivo salvo: {OUTPUT_FILE}")
-
-
-
+print(f"\n✅ Triplets generated: {len(examples)}")
+print(f"📁 File saved: {OUTPUT_FILE}")

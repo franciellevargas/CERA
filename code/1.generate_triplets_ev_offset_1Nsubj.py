@@ -6,9 +6,6 @@ from textblob import TextBlob
 
 random.seed(42)
 
-# =============================
-# CONFIG
-# =============================
 TXT_FOLDER = "txt_train"
 CHUNK_SIZE = 50
 CHUNK_OVERLAP = 10
@@ -16,14 +13,34 @@ N_NEGATIVES = 5
 OUTPUT_FILE = "contriever_train_triplets_ev_offset.jsonl"
 
 
-# =============================
-# FUNÇÕES
-# =============================
-def build_query(row):
+def build_query(row: pd.Series) -> str:
+    """Build a natural-language comparison query from a prompt row.
+
+    Args:
+        row (pd.Series): A row containing the Intervention, Comparator,
+            and Outcome fields.
+
+    Returns:
+        str: A query string comparing the intervention versus the comparator
+            on the given outcome.
+    """
     return f"Compare the effect of {row['Intervention']} versus {row['Comparator']} on {row['Outcome']}."
 
 
-def chunk_text_with_offsets(text, chunk_size=50, chunk_overlap=10):
+def chunk_text_with_offsets(text: str, chunk_size: int = 50, chunk_overlap: int = 10) -> list:
+    """Split text into overlapping word chunks tracking character offsets.
+
+    Args:
+        text (str): The full document text to split.
+        chunk_size (int): Number of words per chunk. Defaults to 50.
+        chunk_overlap (int): Number of words shared between consecutive
+            chunks. Defaults to 10.
+
+    Returns:
+        list: A list of dicts, each with keys text (str), char_start
+            (int) and char_end (int) describing a chunk and its character
+            span within the original text. Empty if the text has no words.
+    """
     words = text.split()
     chunks = []
 
@@ -57,19 +74,37 @@ def chunk_text_with_offsets(text, chunk_size=50, chunk_overlap=10):
     return chunks
 
 
-def overlaps(a_start, a_end, b_start, b_end):
+def overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    """Check whether two character spans overlap.
+
+    Args:
+        a_start (int): Start offset of the first span.
+        a_end (int): End offset of the first span.
+        b_start (int): Start offset of the second span.
+        b_end (int): End offset of the second span.
+
+    Returns:
+        bool: True if the spans overlap, False otherwise.
+    """
     return not (b_end < a_start or b_start > a_end)
 
 
-def chunk_subjectivity(text):
+def chunk_subjectivity(text: str) -> float:
+    """Compute the subjectivity score of a text chunk.
+
+    Args:
+        text (str): The text chunk to score.
+
+    Returns:
+        float: The TextBlob subjectivity score in the range [0.0, 1.0],
+            or 0.0 if scoring fails.
+    """
     try:
         return TextBlob(text).sentiment.subjectivity
     except:
         return 0.0
 
-# =============================
-# LOAD CSVs
-# =============================
+
 prompts = pd.read_csv("prompts_merged.csv")
 annotations = pd.read_csv("annotations_merged.csv")
 
@@ -82,9 +117,7 @@ merged = pd.merge(
     how="inner"
 )
 
-# =============================
-# FILTERING VALID EVIDENCES
-# =============================
+# Filter valid evidence
 merged = merged[
     (merged["Evidence Start"] >= 0) &
     (merged["Evidence End"] > merged["Evidence Start"])
@@ -92,15 +125,9 @@ merged = merged[
 
 print(f"Total of valid evidences: {len(merged)}")
 
-# =============================
-# DOCUMENTS CACHE
-# =============================
 doc_cache = {}
 examples = []
 
-# =============================
-# MAIN LOOP
-# =============================
 print("\nGenerating triplets with negatives using local subjective criteria...")
 
 for idx, row in merged.iterrows():
@@ -134,9 +161,7 @@ for idx, row in merged.iterrows():
     ev_start = int(row["Evidence Start"])
     ev_end = int(row["Evidence End"])
 
-    # -----------------------------
-    # POSITIVE
-    # -----------------------------
+    # Positives
     positives = [
         c for c in chunks
         if overlaps(ev_start, ev_end, c["char_start"], c["char_end"])
@@ -149,9 +174,7 @@ for idx, row in merged.iterrows():
     positive_text_raw = pos_chunk_obj["text"]
     positive_chunk = positive_text_raw.lower()
 
-    # -----------------------------
-    # EVIDENCE OFFSETS RELATIVES TO CHUNK (positive)
-    # -----------------------------
+    # Evidence offsets relative to chunk (positive)
     pos_cs = pos_chunk_obj["char_start"]
     pos_ce = pos_chunk_obj["char_end"]
 
@@ -162,9 +185,7 @@ for idx, row in merged.iterrows():
     if evidence_end_in_chunk <= evidence_start_in_chunk:
         continue
 
-    # -----------------------------
-    # NEGATIVES: TOP-K SUBJETIVES
-    # -----------------------------
+    # Negatives: top-k subjective
     negative_candidates = [
         c for c in chunks
         if not overlaps(ev_start, ev_end, c["char_start"], c["char_end"])
@@ -191,9 +212,7 @@ for idx, row in merged.iterrows():
     if len(top_negatives) < N_NEGATIVES:
         continue
 
-    # -----------------------------
-    # MOUNT TRIPLET (+ offsets from evidence in chunk)
-    # -----------------------------
+    # Triplet(+ offsets from evidence in chunk)
     example = {
         "PMCID": pmcid,
         "query": build_query(row).lower(),
@@ -205,9 +224,6 @@ for idx, row in merged.iterrows():
 
     examples.append(example)
 
-# =============================
-# SAVE
-# =============================
 with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
     for ex in examples:
         f.write(json.dumps(ex) + "\n")

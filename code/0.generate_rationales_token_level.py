@@ -4,7 +4,6 @@ from transformers import AutoTokenizer, AutoModel
 import spacy
 import string
 
-# --- Configuração ---
 MODEL_NAME = "contriever-finetuned-clinicaltrials"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -13,13 +12,25 @@ model = AutoModel.from_pretrained(MODEL_NAME)
 model.to(DEVICE)
 model.eval()
 
-# --- spaCy: carregar idioma desejado ---
-nlp = spacy.load("en_core_web_sm")  # mude para "pt_core_news_sm" se for PT-BR
+nlp = spacy.load("en_core_web_sm")  # change to "pt_core_news_sm" for PT-BR
 
-# --- Caracteres de pontuação ---
 punctuation_chars = set(string.punctuation)
 
-def merge_subtokens(tokens, scores):
+
+def merge_subtokens(tokens: list[str], scores: list[float]) -> tuple[list[str], list[float]]:
+    """
+    Merges WordPiece subtokens (prefixed with "##") back into whole words, averaging their scores.
+
+    Args:
+        tokens: Token strings as produced by the tokenizer, where continuation
+            subtokens start with "##".
+        scores: Relevance score for each token, aligned with tokens.
+
+    Returns:
+        A tuple (merged_tokens, merged_scores) where merged_tokens are the
+        reconstructed whole words and merged_scores are the averaged scores for
+        each word.
+    """
     merged_tokens, merged_scores = [], []
     current_word, current_scores = "", []
 
@@ -40,9 +51,17 @@ def merge_subtokens(tokens, scores):
 
     return merged_tokens, merged_scores
 
-def is_valid_token(tok):
+
+def is_valid_token(tok: str) -> bool:
     """
-    Retorna True se o token não for stopword, não for pontuação pura e tiver mais de 1 letra
+    Returns True if the token is not a stopword, is not pure punctuation, and has more than 1 letter.
+
+    Args:
+        tok: The token string to validate.
+
+    Returns:
+        True if the token is longer than one character, is not entirely
+        punctuation, and is not a stopword; False otherwise.
     """
     if len(tok) <= 1:
         return False
@@ -53,7 +72,21 @@ def is_valid_token(tok):
         return False
     return True
 
-def token_rationales(query, passage, top_k_tokens=5):
+
+def token_rationales(query: str, passage: str, top_k_tokens: int = 5) -> list[tuple[str, float]]:
+    """
+    Computes the most relevant passage tokens for a query using token-level
+    dot-product similarity against the pooled query embedding.
+
+    Args:
+        query: The query text to encode and compare against.
+        passage: The passage text whose tokens are scored.
+        top_k_tokens: Number of highest-scoring valid tokens to return.
+
+    Returns:
+        A list of (token, score) tuples for the top-K valid tokens, sorted by
+        descending score.
+    """
     with torch.no_grad():
         # Encode query (pooled)
         q_inputs = tokenizer(query, return_tensors="pt", truncation=True, padding=True).to(DEVICE)
@@ -67,20 +100,20 @@ def token_rationales(query, passage, top_k_tokens=5):
         # Dot product
         scores = torch.matmul(token_embs, q_emb.squeeze(0))
 
-        # Converter IDs → tokens
+        # Convert IDs → tokens
         tokens = tokenizer.convert_ids_to_tokens(p_inputs['input_ids'][0])
 
         # Merge subtokens
         merged_tokens, merged_scores = merge_subtokens(tokens, scores.tolist())
 
-        # Filtrar tokens
+        # Filter tokens
         filtered = [(tok, score) for tok, score in zip(merged_tokens, merged_scores) if is_valid_token(tok)]
 
         # Top-K
         topk = sorted(filtered, key=lambda x: x[1], reverse=True)[:top_k_tokens]
         return topk
 
-# --- Processa o corpus ---
+# Process the corpus
 with open("contriever_valtest_candidates.jsonl", "r") as f:
     corpus = [json.loads(line) for line in f]
 
@@ -98,11 +131,8 @@ for item in corpus:
             'rationales': rationales
         })
 
-# --- Salva em JSONL ---
 with open("tcer_rationales.jsonl", "w") as f_out:
     for r in results:
         f_out.write(json.dumps(r) + "\n")
 
-print(f"Processamento concluído! Total de {len(results)} exemplos salvos em 'tcer_rationales.jsonl'")
-
-
+print(f"Processing complete! Total of {len(results)} examples saved in 'tcer_rationales.jsonl'")

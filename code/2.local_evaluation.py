@@ -6,9 +6,6 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from collections import Counter, defaultdict
 
-# =============================
-# CONFIGURATION
-# =============================
 K_VALUES = [1, 3, 5, 10, 20, 50]
 TOP_K_SAVE = 50
 MAX_LEN = 128
@@ -21,21 +18,33 @@ JSON_FILE = "test_local_grouped.jsonl"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# =============================
-# LOAD MODEL
-# =============================
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
 model.eval()
 
-# =============================
-# HELPERS
-# =============================
-def load_jsonl(path):
+
+def load_jsonl(path: str) -> list:
+    """Load a JSON Lines file into a list of parsed records.
+
+    Args:
+        path (str): Path to the .jsonl file to read. Blank lines are ignored.
+
+    Returns:
+        list: One parsed object (typically a dict) per non-empty line.
+    """
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
-def dedup_preserve_order(items):
+
+def dedup_preserve_order(items: list) -> list:
+    """Remove duplicate items while keeping their first-seen order.
+
+    Args:
+        items (list): Iterable of hashable items that may contain duplicates.
+
+    Returns:
+        list: Items with duplicates removed, preserving the original order.
+    """
     seen = set()
     result = []
     for item in items:
@@ -44,8 +53,22 @@ def dedup_preserve_order(items):
             result.append(item)
     return result
 
+
 @torch.no_grad()
-def embed_texts(texts, batch_size=64):
+def embed_texts(texts: list, batch_size: int = 64) -> torch.Tensor:
+    """Encode texts into L2-normalized embeddings using the global model.
+
+    Texts are tokenized and embedded in batches; the [CLS] token of the last
+    hidden state is used as the representation and then L2-normalized.
+
+    Args:
+        texts (list): Strings to embed.
+        batch_size (int): Number of texts encoded per forward pass.
+
+    Returns:
+        torch.Tensor: Tensor of shape (len(texts), hidden_size) on CPU
+            containing the normalized embeddings.
+    """
     embs = []
 
     for i in range(0, len(texts), batch_size):
@@ -67,7 +90,20 @@ def embed_texts(texts, batch_size=64):
 
     return torch.cat(embs, dim=0)
 
-def topk_from_scores(scores_1d, k):
+
+def topk_from_scores(scores_1d: torch.Tensor, k: int) -> tuple:
+    """Return the indices and values of the top-k highest scores.
+
+    Args:
+        scores_1d (torch.Tensor): 1-D tensor of scores.
+        k (int): Number of top entries to return. Capped at the number of
+            available scores.
+
+    Returns:
+        tuple: A (indices, values) pair, where indices is a list of
+            int positions and values is a list of float scores, both
+            ordered from highest to lowest score.
+    """
     vals, idxs = torch.topk(
         scores_1d,
         k=min(k, scores_1d.shape[0]),
@@ -75,14 +111,38 @@ def topk_from_scores(scores_1d, k):
     )
     return idxs.tolist(), vals.tolist()
 
-def dcg_at_k(binary_relevance):
+
+def dcg_at_k(binary_relevance: list) -> float:
+    """Compute Discounted Cumulative Gain over a relevance sequence.
+
+    Args:
+        binary_relevance (list): Relevance grades ordered by rank (typically
+            0/1 values), where index 0 is the top-ranked item.
+
+    Returns:
+        float: The DCG value, where each positive relevance contributes
+            rel / log2(rank + 1).
+    """
     dcg = 0.0
     for i, rel in enumerate(binary_relevance, start=1):
         if rel > 0:
             dcg += rel / math.log2(i + 1)
     return dcg
 
-def ndcg_at_k_from_ranking(ranked_indices, positive_index_set, k):
+
+def ndcg_at_k_from_ranking(ranked_indices: list, positive_index_set: set, k: int) -> float:
+    """Compute normalized DCG at k for a single ranking.
+
+    Args:
+        ranked_indices (list): Passage indices ordered from most to least
+            relevant according to the model.
+        positive_index_set (set): Indices that count as relevant (positives).
+        k (int): Cutoff rank for the evaluation.
+
+    Returns:
+        float: NDCG@k in the range [0.0, 1.0]; 0.0 when the ideal DCG
+            is zero (no positives within reach).
+    """
     top_k = ranked_indices[:k]
     binary_rel = [1 if idx in positive_index_set else 0 for idx in top_k]
     dcg = dcg_at_k(binary_rel)
@@ -95,7 +155,20 @@ def ndcg_at_k_from_ranking(ranked_indices, positive_index_set, k):
         return 0.0
     return dcg / idcg
 
-def average_precision_at_k(ranked_indices, positive_index_set, k):
+
+def average_precision_at_k(ranked_indices: list, positive_index_set: set, k: int) -> float:
+    """Compute Average Precision at k for a single ranking.
+
+    Args:
+        ranked_indices (list): Passage indices ordered from most to least
+            relevant according to the model.
+        positive_index_set (set): Indices that count as relevant (positives).
+        k (int): Cutoff rank for the evaluation.
+
+    Returns:
+        float: AP@k in the range [0.0, 1.0], normalized by
+            min(num_positives, k); 0.0 when there are no positives.
+    """
     top_k = ranked_indices[:k]
     hits = 0
     precision_sum = 0.0
@@ -110,19 +183,63 @@ def average_precision_at_k(ranked_indices, positive_index_set, k):
         return 0.0
     return precision_sum / denom
 
-def reciprocal_rank(ranked_indices, positive_index_set):
+
+def reciprocal_rank(ranked_indices: list, positive_index_set: set) -> tuple:
+    """Find the reciprocal rank of the first relevant item in a ranking.
+
+    Args:
+        ranked_indices (list): Passage indices ordered from most to least
+            relevant according to the model.
+        positive_index_set (set): Indices that count as relevant (positives).
+
+    Returns:
+        tuple: A (reciprocal_rank, first_positive_rank) pair. The first
+            element is 1.0 / rank (float) for the first positive, and the
+            second is its 1-based rank (int). Returns (0.0, None) when no
+            positive is found.
+    """
     for rank, idx in enumerate(ranked_indices, start=1):
         if idx in positive_index_set:
             return 1.0 / rank, rank
     return 0.0, None
 
-def mrr_at_k_from_ranking(ranked_indices, positive_index_set, k):
+
+def mrr_at_k_from_ranking(ranked_indices: list, positive_index_set: set, k: int) -> float:
+    """Compute the reciprocal rank within the top-k of a single ranking.
+
+    Args:
+        ranked_indices (list): Passage indices ordered from most to least
+            relevant according to the model.
+        positive_index_set (set): Indices that count as relevant (positives).
+        k (int): Cutoff rank for the evaluation.
+
+    Returns:
+        float: 1.0 / rank for the first positive within the top-k, or
+            0.0 if no positive appears in the top-k.
+    """
     for rank, idx in enumerate(ranked_indices[:k], start=1):
         if idx in positive_index_set:
             return 1.0 / rank
     return 0.0
 
-def build_pmcid_pools(data):
+
+def build_pmcid_pools(data: list) -> dict:
+    """Group passages into a per-PMCID candidate pool for local ranking.
+
+    For each PMCID, positive and negative passages from every example are
+    collected and de-duplicated, so each document is ranked against only its
+    own pool of passages.
+
+    Args:
+        data (list): Grouped examples, each a dict with a PMCID key and
+            optional positives and negatives lists of passage
+            strings.
+
+    Returns:
+        dict: Mapping from PMCID to a pool dict with keys texts (the
+            de-duplicated passage list) and text_to_index (a mapping from
+            each passage string to its position in texts).
+    """
     pmcid_to_texts = defaultdict(list)
 
     for ex in data:
@@ -140,10 +257,34 @@ def build_pmcid_pools(data):
 
     return pools
 
-# =============================
-# EVALUATION
-# =============================
-def evaluate_pmcid_local(data):
+
+# Evaluation
+def evaluate_pmcid_local(data: list) -> tuple:
+    """Evaluate PMCID-local retrieval and aggregate ranking metrics.
+
+    For each example the query is embedded and scored against its own PMCID
+    pool, then Recall, Precision, NDCG, MAP and MRR are accumulated at each
+    cutoff in K_VALUES. Examples without usable positives are skipped, and
+    per-query top-TOP_K_SAVE rankings are collected for inspection.
+
+    Args:
+        data (list): Grouped examples, each a dict with PMCID,
+            query and optional positives/negatives keys.
+
+    Returns:
+        tuple: A 10-element tuple
+            (recall_at_k, precision_at_k, ndcg_at_k, map_at_k, mrr_at_k,
+            mrr, first_positive_rank_distribution, all_rankings, skipped, n)
+            where the first five are dicts keyed by k (float averages), mrr
+            is the overall mean reciprocal rank (float),
+            first_positive_rank_distribution is a Counter of first-positive
+            ranks, all_rankings is a list of per-query ranking dicts,
+            skipped (int) is the number of skipped examples, and n is the 
+            number of evaluated queries.
+
+    Raises:
+        ValueError: If no valid queries remain after skipping.
+    """
     pools = build_pmcid_pools(data)
     print(f"Built {len(pools)} PMCID-local pools.")
 
@@ -256,9 +397,7 @@ def evaluate_pmcid_local(data):
         n
     )
 
-# =============================
-# RUN
-# =============================
+
 if __name__ == "__main__":
     data = load_jsonl(JSON_FILE)
     print(f"Total grouped examples: {len(data)}")
