@@ -45,19 +45,19 @@ that retrieval becomes both more accurate and interpretable in a RAG setting.
 CERA/
 ├── README.md
 └── code/
-    ├── generate_triplets_train.py          # Triplet construction (shared helpers)
-    ├── generate_triplets_nsubj_train.py    # Subjectivity-filtered triplets
-    ├── generate_triplets_ev_offset_nsubj.py# Triplets with evidence offsets
-    ├── weighted_masking.py                  # POS-weighted token masks
-    ├── finetune_triplet_kl_sched.py         # Fine-tuning: triplet + KL alignment
-    ├── finetune_weighted_kl.py              # Fine-tuning: triplet + weighted KL
-    ├── format_test_data.py                  # Build grouped retrieval test sets
-    ├── eval_local.py                        # Retrieval evaluation (Recall@k, etc.)
-    ├── generate_rationales_token_level.py   # Token-level rationale extraction
-    ├── eval_faithfulness.py                 # Faithfulness evaluation
-    ├── eval_llm_judge.py                     # LLM-as-a-judge evaluation
-    ├── utils.py                             # Shared helpers (e.g. GPU selection)
-    └── results/                             # Stored LLM-judge judgments & summaries
+    ├── results/                               # Stored LLM-judge judgments & summaries
+    ├── eval_faithfulness.py                   # Faithfulness evaluation
+    ├── eval_llm_judge.py                      # LLM-as-a-judge evaluation
+    ├── eval_local.py                          # Retrieval evaluation (Recall@k, etc.)
+    ├── finetune_triplet_kl_sched.py           # Fine-tuning: triplet + KL alignment
+    ├── finetune_weighted_kl.py                # Fine-tuning: triplet + weighted KL
+    ├── format_test_data.py                    # Build grouped retrieval test sets
+    ├── generate_rationales_token_level.py     # Token-level rationale extraction
+    ├── generate_triplets_ev_offset_nsubj.py   # Triplets with evidence offsets
+    ├── generate_triplets_nsubj_train.py       # Subjectivity-filtered triplets
+    ├── generate_triplets_train.py             # Triplet construction (shared helpers)
+    ├── utils.py                               # Shared helpers (e.g. GPU selection)
+    └── weighted_masking.py                    # POS-weighted token masks
 ```
 
 ### File purposes
